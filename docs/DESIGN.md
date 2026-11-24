@@ -114,6 +114,17 @@ hello.prg: hello.p8
 	p8c -target $(TARGET) -srcdirs "src:$$dirs" hello.p8
 ```
 
+With `-own` the line starts with the project's own directories: its
+`src/`, and what its own `[targets]` table adds for the target.  A program
+that keeps its sources in `src/` then writes no directory of its own on
+the build line, and a library builds its tests and demos the way a
+program that uses it would:
+
+```
+dirs=$(p8lib srcdirs -target c64 -own) || exit 1
+prog8c -target c64 -srcdirs "$dirs:demo" demo/main.p8
+```
+
 Options are written `-target` as the compilers write them; `--target` is
 accepted as well, as the compilers accept it.
 
@@ -208,23 +219,31 @@ program's sources.
 ### What checks the names
 
 `p8lib check`, for a library's author, and `p8lib install` and `p8lib
-srcdirs`, for every library of a program, check what needs no reading of
-Prog8:
+srcdirs`, for every library of a program, check:
 
 - the library's name, and that it is not a module of a compiler's library;
 - the names of the `.p8` files in `src/` and in the directories of
   `[targets]`;
+- the names of the blocks in those files;
+- that a block of someone else is only merged into, that `[merges]` lists
+  it, and that it lists every subroutine the library defines there;
 - that two libraries do not list the same name in `[merges]`.
 
 A library that breaks a rule is refused.
+
+For the blocks `p8lib` reads the sources, without parsing them: it blanks
+comments, strings and inline assembly, counts braces, and takes the name
+in front of each brace that opens at the top of a file.  Inside a block
+it sees `%option merge` and the names after `sub`, `asmsub` and `extsub`.
 
 `p8lib srcdirs` also refuses when two of the directories it would print
 hold a module of the same name, because the compiler would silently take
 the first.
 
-The names of blocks are not checked, and `[merges]` is taken at its word.
-The compilers stop at a block that is declared twice.  A merge that
-`[merges]` does not list is the gap: see "Later".
+It does not see variables and constants.  One that a library adds to a
+block of someone else can be listed in `[merges]`, and then two libraries
+that add the same one are told so, but nothing finds one that is not
+listed.
 
 ## p8lib.toml
 
@@ -396,11 +415,13 @@ included: the name, the URL, what the manifest asked for and the commit.
 | `p8lib install` | fetches everything `p8lib.lock` names; resolves and adds to the lock what the manifest names and the lock does not; takes out of the lock what the manifest no longer needs |
 | `p8lib update [name]` | moves the lock to the newest commit the manifest allows |
 | `p8lib list` | the libraries of the project, with commit, description and merges |
-| `p8lib srcdirs -target T` | the directories, as above |
+| `p8lib srcdirs -target T [-own]` | the directories, as above |
 | `p8lib check` | the checks of "Names" on the library in the current directory, for its author |
 | `p8lib init [name]` | writes a first `p8lib.toml` for the library in the current directory, for an author who brings an existing library to `p8lib`: the name from the one module in `src/` or from the directory, `[targets]` from the directories under `src/`.  It then says what `p8lib check` would refuse |
 
 | `p8lib install owner/repo` | fetches the library, asks it its name, adds the line to `[dependencies]` of `p8lib.toml` (a new file when there is none), and installs.  A git URL in place of `owner/repo`, and `-tag`, `-branch` or `-rev`, as in the manifest |
+
+`p8lib -version` prints the version of `p8lib`.
 
 `p8lib install owner/repo` adds a line and changes nothing else in the
 file, and writes it only when the program's libraries still resolve with
@@ -430,10 +451,6 @@ python3 -m unittest discover -s tests
 
 ## Later
 
-- **Reading the sources.**  `p8lib check` and `p8lib install` could read
-  a library's Prog8 for its blocks, `%option merge` and the subroutines of
-  merged blocks, and refuse a block that is not named after the library
-  and a merge that `[merges]` does not list.
 - **A catalog.**  A list that maps short names to repositories (`regex`
   -> `gillham/prog8regex`).  `p8lib install regex` would look the name up
   once and write the repository into the manifest, so that a build never
@@ -446,10 +463,9 @@ python3 -m unittest discover -s tests
 - **Naming libraries on the command line.**  `p8lib srcdirs -target c64
   regex strings2` with no manifest.  It needs an answer to which commit
   "the installed `regex`" is when the store holds several.
-- **The program's own directories.**  The manifest could list the
-  program's source directories per target, so that `p8lib srcdirs` returns
-  the whole `-srcdirs` value and a Makefile does not repeat
-  `src:src/c64`.
+- **More of the program's own directories.**  `-own` gives `src/` and
+  what `[targets]` adds to it.  A program with its sources somewhere else,
+  or a library's `demo/`, is still written on the build line.
 - **A compiler that reads the result.**  `p8lib` could write the resolved
   directories to a plain file, one per line, for each target.  A compiler
   could read that with no TOML parser, no git and no dependency logic, and

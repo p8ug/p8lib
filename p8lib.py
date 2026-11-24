@@ -18,6 +18,8 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+__version__ = "0.1.0"
+
 MANIFEST = "p8lib.toml"
 LOCK = "p8lib.lock"
 LOCK_VERSION = 1
@@ -257,6 +259,72 @@ def own_name(name: str, package: str) -> bool:
     return name == package or name.startswith(package + "_")
 
 
+# What hides braces and names from a reader that is not a parser: inline
+# assembly, comments, strings and character literals.
+_OPAQUE = re.compile(
+    r"""(?s:\{\{.*?\}\})|(?s:/\*.*?\*/)|;[^\n]*|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'""")
+_BLOCK_HEADER = re.compile(r"([A-Za-z_]\w*)[ \t]*(?:\$[0-9A-Fa-f]+|%[01]+|\d+)?\s*\Z")
+_SUB = re.compile(r"\b(?:asmsub|sub)\s+([A-Za-z_]\w*)\s*\(|\bextsub\b[^\n=]*=\s*([A-Za-z_]\w*)\s*\(")
+_MERGE = re.compile(r"^[ \t]*%option\b[^\n]*\bmerge\b", re.M)
+
+
+@dataclass
+class Block:
+    name: str
+    merge: bool
+    subs: list
+
+
+def scan_blocks(text: str) -> list[Block]:
+    """The blocks of a Prog8 source file: their names, whether they have
+    %option merge, and the subroutines they define.  Not a parser: it
+    counts braces after blanking what could hide them."""
+    text = _OPAQUE.sub(lambda m: re.sub(r"[^\n]", " ", m.group()), text)
+    blocks, depth, start, body = [], 0, 0, []
+    header = None
+    for at, char in enumerate(text):
+        if char == "{":
+            if depth == 0:
+                lines = [l for l in text[start:at].splitlines() if not l.lstrip().startswith("%")]
+                header = _BLOCK_HEADER.search("\n".join(lines))
+                body = []
+            depth += 1
+        elif char == "}":
+            depth = max(depth - 1, 0)
+            if depth == 0:
+                if header:
+                    inside = "".join(body)
+                    subs = [a or b for a, b in _SUB.findall(inside)]
+                    blocks.append(Block(header.group(1), bool(_MERGE.search(inside)), subs))
+                header, start = None, at + 1
+        elif depth == 1:
+            body.append(char)
+        elif depth > 1 and char == "\n":
+            body.append(char)
+    return blocks
+
+
+def block_problems(source: Path, shown: str, name: str, merges: dict) -> list[str]:
+    """What the blocks of one file of a library do against the rules."""
+    try:
+        blocks = scan_blocks(source.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return []
+    problems = []
+    for block in blocks:
+        if own_name(block.name, name):
+            continue
+        if not block.merge:
+            problems.append(f"{shown}: block '{block.name}': a block of '{name}' is named {name} or {name}_...")
+        elif block.name not in merges:
+            problems.append(f"{shown}: merges into the block '{block.name}', which [merges] does not list")
+        else:
+            listed = merges[block.name] if isinstance(merges[block.name], list) else []
+            problems += [f"{shown}: defines {block.name}.{sub}, which [merges] does not list"
+                         for sub in block.subs if sub not in listed]
+    return problems
+
+
 def check_library(manifest: Manifest, published: bool = False) -> list[str]:
     """The problems of a library: the rules of "Names" and of "What a
     manifest may say" that need no parsing of Prog8.  published: also what
@@ -292,6 +360,7 @@ def check_library(manifest: Manifest, published: bool = False) -> list[str]:
                 problems.append(f"{shown}: a file of '{name}' is named {name}.p8 or {name}_....p8")
             elif source.stem in BUILTIN_MODULES:
                 problems.append(f"{shown}: '{source.stem}' is a module in a compiler's library")
+            problems += block_problems(source, shown, name, manifest.merges)
 
     for block, names in manifest.merges.items():
         if not IDENT_RE.match(block):
@@ -527,6 +596,8 @@ def dirs_for(lib: Lib, keys: list[str], target: str) -> list[Path]:
                 rels = lib.manifest.targets[key]
                 if rels is False:
                     raise P8Error(f"'{lib.name}' is not for {key} (target {target})")
+                if not isinstance(rels, list):
+                    raise P8Error(f"'{lib.name}': [targets] {key} must be a list of directories or false")
                 break
         else:
             raise P8Error(f"'{lib.name}' has nothing for target {target} (tried: {', '.join(keys)})")
@@ -688,6 +759,10 @@ def cmd_srcdirs(args) -> None:
     keys = target_keys(args.target, args.as_name, args.cpu)
     libs = resolve(manifest, lock, online=False)
     dirs: list[Path] = []
+    if args.own:                                # the project's own src/ and target directories
+        own = Lib(manifest.name if isinstance(manifest.name, str) else "this project",
+                  manifest.dir, manifest, None, None)
+        dirs.extend(dirs_for(own, keys, args.target))
     for lib in libs.values():
         dirs.extend(dirs_for(lib, keys, args.target))
     dirs = list(dict.fromkeys(dirs))
@@ -769,6 +844,7 @@ def cmd_init(args) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="p8lib", description="Prog8 library manager", allow_abbrev=False)
+    parser.add_argument("-version", "--version", action="version", version=f"p8lib {__version__}")
     commands = parser.add_subparsers(dest="command", required=True, metavar="command")
 
     def command(name, function, text):
@@ -793,6 +869,8 @@ def build_parser() -> argparse.ArgumentParser:
     srcdirs.add_argument("-as", "--as", dest="as_name", metavar="NAME",
                          help="the known target to treat an unknown one as")
     srcdirs.add_argument("-cpu", "--cpu", metavar="NAME", help="the CPU, when it is not the target's usual one")
+    srcdirs.add_argument("-own", "--own", action="store_true",
+                         help="first the project's own src/ and what its [targets] adds for the target")
     command("check", cmd_check, "check the library in the current directory against the rules")
     text = f"write a first {MANIFEST} for the library in the current directory"
     init = commands.add_parser("init", help=text, description=text, allow_abbrev=False)

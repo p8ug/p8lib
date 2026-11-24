@@ -154,7 +154,103 @@ class Shorthand(unittest.TestCase):
             self.assertEqual(dep.ref, {"tag": "v1.0"})
 
 
+class Scanner(unittest.TestCase):
+    def blocks(self, text):
+        return [(b.name, b.merge, b.subs) for b in p8lib.scan_blocks(text)]
+
+    def test_blocks_and_what_hides_them(self):
+        text = """
+%import textio
+%zeropage basicsafe
+; not { a block
+/* nor
+   this { one */
+regex {
+    %option no_symbol_prefixing, ignore_unused
+    str brace = "}{ ; not a comment"
+    ubyte c = '{'
+    sub match(str pattern) -> bool {
+        if pattern[0] == '}' { return true }
+        %asm {{
+            lda  #'}'   ; } } }
+            rts
+        }}
+        return false
+    }
+    asmsub fast(ubyte a @A) clobbers(X) {
+        %asm {{ rts }}
+    }
+    extsub $ffd2 = chrout(ubyte c @A)
+    ; sub commented_out() { }
+}
+
+regex_tables $c000
+{
+    ubyte[4] t = [1, 2, 3, 4]
+}
+
+txt {
+    %option merge
+    sub print_centered(str s) { }
+}
+"""
+        self.assertEqual(self.blocks(text), [
+            ("regex", False, ["match", "fast", "chrout"]),
+            ("regex_tables", False, []),
+            ("txt", True, ["print_centered"])])
+
+    def test_a_file_without_blocks(self):
+        self.assertEqual(self.blocks("%import shared_things\n; nothing else\n"), [])
+
+
 class PathLibraries(Case):
+    def test_version(self):
+        self.assertEqual(self.ok("-version").stdout, f"p8lib {p8lib.__version__}\n")
+
+    def test_blocks_are_named_after_the_library(self):
+        lib = self.library("libmem", files={"src/libmem.p8": "mem {\n    sub malloc(uword size) { }\n}\n"})
+        self.program(self.path_dep("libmem", lib))
+        self.fails("install", expect="src/libmem.p8: block 'mem': a block of 'libmem' is named libmem or libmem_...")
+        (lib / "src/libmem.p8").write_text("libmem {\n    sub malloc(uword size) { }\n}\nlibmem_pool {\n}\n")
+        self.ok("install")
+        self.ok("check", cwd=lib)
+
+    def test_merges_must_be_listed(self):
+        merge = "txt {\n    %option merge\n    sub print(str s) { }\n    sub print_fast(str s) { }\n}\n"
+        lib = self.library("fastprint", files={"src/fastprint.p8": "fastprint { }\n" + merge})
+        self.program(self.path_dep("fastprint", lib))
+        self.fails("install", expect="merges into the block 'txt', which [merges] does not list")
+        manifest = lib / "p8lib.toml"
+        manifest.write_text(manifest.read_text() + '[merges]\ntxt = ["print"]\n')
+        self.fails("install", expect="defines txt.print_fast, which [merges] does not list")
+        manifest.write_text(manifest.read_text().replace('["print"]', '["print", "print_fast"]'))
+        self.ok("install")
+        # merging into its own block needs no listing
+        (lib / "src/fastprint_more.p8").write_text("fastprint {\n    %option merge\n    sub more() { }\n}\n")
+        self.ok("install")
+        # and a block of someone else without merge is just a clash
+        (lib / "src/fastprint_more.p8").write_text("txt {\n    sub more() { }\n}\n")
+        self.fails("install", expect="block 'txt': a block of 'fastprint'")
+
+    def test_own_directories(self):
+        lib = self.library("regex", '[targets]\nc64 = ["src/c64"]\ndefault = []\n',
+                           {"src/c64/regex_platform.p8": "regex_platform { }\n"})
+        (self.prog / "src/c64").mkdir(parents=True)
+        (self.prog / "src/main.p8").write_text("main { }\n")
+        self.program(self.path_dep("regex", lib))
+        self.assertEqual(self.srcdirs("-target", "c64"), [lib / "src", lib / "src/c64"])
+        self.assertEqual(self.srcdirs("-target", "c64", "-own"), [self.prog / "src", lib / "src", lib / "src/c64"])
+        (self.prog / "p8lib.toml").write_text(
+            '[targets]\nc64 = ["src/c64"]\ndefault = []\n[dependencies]\n' + self.path_dep("regex", lib))
+        self.assertEqual(self.srcdirs("-target", "c64", "-own"),
+                         [self.prog / "src", self.prog / "src/c64", lib / "src", lib / "src/c64"])
+        self.assertEqual(self.srcdirs("-target", "cx16", "--own"), [self.prog / "src", lib / "src"])
+        # a library builds its own demo the same way, with no dependencies at all
+        self.assertEqual(self.ok("srcdirs", "-target", "c64", "-own", cwd=lib).stdout,
+                         os.pathsep.join([str(lib / "src"), str(lib / "src/c64")]) + "\n")
+        shutil.rmtree(self.prog / "src")
+        self.fails("srcdirs", "-target", "c64", "-own", expect="directory 'src' does not exist")
+
     def test_no_dependencies_gives_an_empty_line(self):
         self.program("")
         self.ok("install")

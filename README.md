@@ -76,6 +76,15 @@ main.prg: main.p8
 	prog8c -target $(TARGET) -srcdirs "src:$$dirs" main.p8
 ```
 
+With `-own`, the line starts with the program's own `src/` (and what a
+`[targets]` table in the program's `p8lib.toml` adds for the target), so
+the build line needs no directory of its own:
+
+```
+dirs=$(p8lib srcdirs -target cx16 -own) || exit 1
+prog8c -target cx16 -srcdirs "$dirs" src/main.p8
+```
+
 For a custom target file, say which known target it is like:
 `p8lib srcdirs -target mymachine -as cx16`.  For a CPU other than the
 target's usual one, add `-cpu 65816`.
@@ -122,9 +131,10 @@ install`.
 | `p8lib install owner/repo[@tag]` | adds a library to `p8lib.toml` first; also takes a git URL, and `-tag`, `-branch` or `-rev` |
 | `p8lib update [name ...]` | moves the lock to the newest commits the manifest allows |
 | `p8lib list` | the libraries of the program: commit, Prog8 version, description, and what they merge into other blocks |
-| `p8lib srcdirs -target T` | prints the directories for the compiler's `-srcdirs` |
+| `p8lib srcdirs -target T` | prints the directories for the compiler's `-srcdirs`; with `-own`, the project's own first |
 | `p8lib check` | for a library's author: checks the library in the current directory |
 | `p8lib init [name]` | for a library's author: writes a first `p8lib.toml` |
+| `p8lib -version` | prints the version of `p8lib` |
 
 Every command but `init` takes `-manifest PATH` to use a `p8lib.toml` other
 than the one found from the current directory upwards.  Options can be written with
@@ -172,7 +182,7 @@ a library carries the library's name:
 
 - every `.p8` file in `src/` and in the target directories is `name.p8`
   or `name_something.p8`;
-- every block should be named the same way;
+- every block is named the same way: `regex { }`, `regex_tables { }`;
 - the name is not that of a module in a compiler's library (`strings`,
   `math`, `textio`, ...), which a file in `-srcdirs` would silently
   replace.
@@ -181,7 +191,13 @@ A subroutine cannot have the name of its block, so do not name a library
 after its main routine: the library with `malloc()` is `libmem`.
 
 Everything in `src/` can be imported by a program, so tests and demo
-programs go in another directory.
+programs go in another directory.  Build them with the library's own
+directories from `p8lib`, which also brings in the library's dependencies:
+
+```
+dirs=$(p8lib srcdirs -target c64 -own) || exit 1
+prog8c -target c64 -srcdirs "$dirs:demo" demo/main.p8
+```
 
 ### Targets
 
@@ -220,7 +236,9 @@ txt = ["print", "print_centered"]
 
 When two libraries replace the same routine, the compiler takes the one
 imported last.  `p8lib` refuses a program whose libraries list the same
-name, and `p8lib list` shows what each library merges.
+name, and `p8lib list` shows what each library merges.  `p8lib check`
+refuses a merge into a block that is not listed, and a subroutine in it
+that is not listed.
 
 ### Releases
 
@@ -253,6 +271,6 @@ finds on the PATH (`prog8c`, `prog8c-beta`, `prog8c-llvm`, `p8c`).
 
 - a catalog of short names, for `p8lib install regex`;
 - `p8lib remove`;
-- checking the names of blocks, and that `[merges]` lists what a library
-  really merges: this needs `p8lib` to read Prog8;
+- finding variables and constants that a library adds to a block of
+  someone else and does not list in `[merges]` (subroutines are found);
 - cleaning old commits out of the store.
