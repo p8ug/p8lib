@@ -19,15 +19,26 @@ The design, and the reasons for it, are in [docs/DESIGN.md](docs/DESIGN.md).
 ## Installing
 
 `p8lib` is one Python file that needs Python 3.12 or later, git, and
-nothing else.  From a checkout of this repository, either of
+nothing else.  Either of
 
 ```
-uv tool install .
-pipx install .
+uv tool install git+https://github.com/p8ug/p8lib
+pipx install git+https://github.com/p8ug/p8lib
 ```
 
-puts the `p8lib` command on your PATH.  Copying `p8lib.py` to a directory
-on the PATH and running it as `p8lib.py` works as well.
+puts the `p8lib` command on your PATH.  To bring it up to date later:
+
+```
+uv tool upgrade p8lib
+pipx install --force git+https://github.com/p8ug/p8lib
+```
+
+`pipx upgrade` does not look at a git repository, so with pipx the install
+is repeated.
+
+From a checkout of this repository, `uv tool install .` or `pipx install .`
+does the same.  Copying `p8lib.py` to a directory on the PATH and running
+it as `p8lib.py` works as well.
 
 ## Using libraries in a program
 
